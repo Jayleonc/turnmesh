@@ -1,32 +1,45 @@
-# Go Core Rewrite Roadmap
+# Turnmesh Roadmap
 
-**日期**: 2026-04-13
-**状态**: Active v0.2
+**日期**: 2026-04-14
+**状态**: Active v0.3
 
 ## 0. 当前同步状态
 
-截至 2026-04-13，bootstrap 基线已经落地，不再是纯路线文档。
+截至 2026-04-14，`turnmesh` 已经不是“go-core-rewrite 草案”，而是一版可嵌入的 runtime baseline。
 
 已完成：
 
+- 根包公开 facade：`turnmesh.go`
+- `RunTurn(...)` / `StreamTurn(...)`
+- `RunOneShot(...)`
+- `openai-chatcompat` provider
 - `go.mod`、`cmd/engine/main.go` 和 `internal/*` 基础包结构
 - 核心协议：`internal/core`
 - 执行层最小闭环：`internal/executor`
 - 反馈层最小闭环：`internal/feedback`
 - 编排层 turn loop：`internal/orchestrator`
 - 两个模型 adapter：`internal/model/openai`、`internal/model/anthropic`
+- 第三个模型 adapter：`internal/model/openaichat`
 - 最小 MCP runtime：`internal/mcp`
 - 最小记忆存储：`internal/memory`
+- `ai-customer` 接入文档与实际接入落地
 - 全量验证：`go test ./...`、`go build ./...` 已通过
 
 当前还没做完：
 
-- provider 注册层和统一装配入口
+- 更正式的 semver 发布流程与 examples
 - OpenAI / Anthropic 的流式 SSE 支持
 - 将 MCP 正式桥接到 `executor` 的 tool surface
 - compact / memory policy 的真实策略实现
 - subagent runtime
 - TS bridge / CLI 渐进接管
+
+当前对外推荐接法已经明确：
+
+- 多轮带工具：根包 `turnmesh.New(...).RunTurn(...)`
+- 单次不带工具：根包 `turnmesh.RunOneShot(...)`
+
+`cmd/engine` 保留为 bootstrap / smoke harness，不是外部业务仓库的推荐接入面。
 
 ## 1. 目标
 

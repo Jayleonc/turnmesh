@@ -162,6 +162,19 @@ type TurnResult struct {
 	Events      []Event
 }
 
+type OneShotRequest struct {
+	SystemPrompt string
+	Messages     []Message
+	Metadata     map[string]string
+}
+
+type OneShotResult struct {
+	Text    string
+	Status  TurnStatus
+	Message *Message
+	Events  []Event
+}
+
 type Runtime struct {
 	engine  *orchestrator.Engine
 	session model.Session
@@ -193,6 +206,23 @@ func New(ctx context.Context, cfg Config) (*Runtime, error) {
 		engine:  engine,
 		session: session,
 	}, nil
+}
+
+func RunOneShot(ctx context.Context, cfg Config, req OneShotRequest) (OneShotResult, error) {
+	if ctx == nil {
+		return OneShotResult{}, errors.New("turnmesh: nil context")
+	}
+	if err := ctx.Err(); err != nil {
+		return OneShotResult{}, err
+	}
+
+	session, err := newSession(ctx, cfg, nil)
+	if err != nil {
+		return OneShotResult{}, err
+	}
+	defer session.Close()
+
+	return runOneShot(ctx, session, req)
 }
 
 func (r *Runtime) Close() error {
@@ -264,6 +294,53 @@ func (r *Runtime) RunTurn(ctx context.Context, req TurnRequest) (TurnResult, err
 	return result, nil
 }
 
+func runOneShot(ctx context.Context, session model.Session, req OneShotRequest) (OneShotResult, error) {
+	if session == nil {
+		return OneShotResult{}, errors.New("turnmesh: session is not initialized")
+	}
+
+	stream, err := session.StreamTurn(ctx, core.TurnInput{
+		SystemPrompt: req.SystemPrompt,
+		Messages:     coreMessages(req.Messages),
+		Metadata:     cloneMetadata(req.Metadata),
+	})
+	if err != nil {
+		return OneShotResult{}, err
+	}
+
+	result := OneShotResult{}
+	hadToolCall := false
+	for raw := range stream {
+		event := publicEvent(raw)
+		result.Events = append(result.Events, event)
+		result.Status = event.Status
+
+		switch event.Kind {
+		case EventMessage:
+			if event.Message == nil {
+				continue
+			}
+			message := *event.Message
+			result.Message = &message
+			if message.Role == RoleAssistant && strings.TrimSpace(message.Content) != "" {
+				result.Text = strings.TrimSpace(message.Content)
+			}
+		case EventToolCall:
+			hadToolCall = true
+		case EventError:
+			if event.Error != nil {
+				return result, event.Error
+			}
+			return result, errors.New("turnmesh: one-shot failed")
+		}
+	}
+
+	if hadToolCall {
+		return result, errors.New("turnmesh: one-shot produced tool calls; use RunTurn for tool execution")
+	}
+	return result, nil
+}
+
 func MustJSONSchema(v any) json.RawMessage {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -273,16 +350,6 @@ func MustJSONSchema(v any) json.RawMessage {
 }
 
 func buildRuntimeParts(ctx context.Context, cfg Config) (model.Session, executor.Dispatcher, executor.BatchRuntime, error) {
-	provider, err := buildProvider(cfg)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	registry := model.NewRegistry()
-	if err := registry.Register(provider); err != nil {
-		return nil, nil, nil, err
-	}
-
 	tools := executor.NewRegistryStore()
 	for _, tool := range cfg.Tools {
 		spec, err := executorSpec(tool)
@@ -316,16 +383,30 @@ func buildRuntimeParts(ctx context.Context, cfg Config) (model.Session, executor
 		}
 	}
 
-	session, err := registry.NewSession(ctx, provider.Name(), model.SessionOptions{
-		Model:           cfg.Model,
-		Temperature:     cfg.Temperature,
-		MaxOutputTokens: cfg.MaxOutputTokens,
-		Tools:           coreToolSpecs(cfg.Tools),
-	})
+	session, err := newSession(ctx, cfg, cfg.Tools)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	return session, executor.NewToolDispatcher(tools), executor.NewBatchRuntime(tools), nil
+}
+
+func newSession(ctx context.Context, cfg Config, tools []Tool) (model.Session, error) {
+	provider, err := buildProvider(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	registry := model.NewRegistry()
+	if err := registry.Register(provider); err != nil {
+		return nil, err
+	}
+
+	return registry.NewSession(ctx, provider.Name(), model.SessionOptions{
+		Model:           cfg.Model,
+		Temperature:     cfg.Temperature,
+		MaxOutputTokens: cfg.MaxOutputTokens,
+		Tools:           coreToolSpecs(tools),
+	})
 }
 
 func buildProvider(cfg Config) (model.Provider, error) {

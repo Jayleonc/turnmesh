@@ -42,12 +42,20 @@
 5. 调 `turnmesh.New(...).RunTurn(...)`
 6. 从 `TurnResult` 中拿最终回复文本
 
+`ai-customer/internal/agent/rewrite.go` 现在改成：
+
+1. 继续保留业务侧的 rewrite prompt 和历史拼装
+2. 不再自己拼 `/chat/completions` 请求
+3. 直接调 `turnmesh.RunOneShot(...)`
+4. 从 `OneShotResult.Text` 里拿 rewrite 后的 query
+
 ## 这次新增的 turnmesh 能力
 
-为了让 `ai-customer` 能直接接进来，`turnmesh` 补了两块最关键的公开能力：
+为了让 `ai-customer` 能直接接进来，`turnmesh` 补了三块最关键的公开能力：
 
 - 根包 facade：外部仓库可以直接 `import github.com/Jayleonc/turnmesh`
 - `openai-chatcompat` provider：兼容 OpenAI-compatible `/chat/completions`
+- `RunOneShot(...)`：让 query rewrite、分类、摘要这类单发调用也能复用同一套 provider/session 边界
 
 这样 `ai-customer` 不需要 import `turnmesh/internal/*`，也不需要自己再手写一套 HTTP loop。
 
@@ -58,8 +66,29 @@
 - token budget 裁剪
 - 降级到预检索结果
 - `ask_clarification` 的特殊输出约定
+- query rewrite 的 prompt 策略和 fallback 逻辑
 
 所以这次是“把 runtime 换掉”，不是“把业务行为全改掉”。
+
+## 迁移映射
+
+| `ai-customer` 侧 | 当前职责 | `turnmesh` 侧 |
+| --- | --- | --- |
+| `internal/message/handler.go` | 企微消息过滤、触发判定、会话进入点 | 不下沉 |
+| `internal/agent/service.go` | 业务壳、history 拼装、tool 注入 | `RunTurn(...)` |
+| `internal/agent/rewrite.go` | rewrite prompt、历史选择、fallback | `RunOneShot(...)` |
+| `internal/agent/tools.go` | 客服知识库工具实现 | 以 `turnmesh.Tool` 注入 |
+| `internal/khclient/*` | knowledge-hub HTTP 访问 | 不下沉 |
+| `internal/store/*` | 群组/消息/会话落库 | 不下沉 |
+
+## 回滚边界
+
+如果后续要灰度或回滚，最小边界很清楚：
+
+- 多轮问答主链路：`service.go` 的 `RunTurn(...)`
+- 单发 rewrite 链路：`rewrite.go` 的 `RunOneShot(...)`
+
+也就是说，业务仓库不需要回滚 prompt、工具和知识检索策略，只需要替换 runtime 调用点。
 
 ## 后续建议
 

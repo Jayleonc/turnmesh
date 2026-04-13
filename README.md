@@ -42,6 +42,8 @@
 
 ## 快速开始
 
+### 多轮 Turn Loop
+
 ```go
 package main
 
@@ -95,9 +97,54 @@ func main() {
 		panic(err)
 	}
 
+fmt.Println(result.Text)
+}
+```
+
+### One-Shot API
+
+当你只需要一次模型调用，不需要 tool loop 时，直接用 `RunOneShot`：
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/Jayleonc/turnmesh"
+)
+
+func main() {
+	ctx := context.Background()
+
+	result, err := turnmesh.RunOneShot(ctx, turnmesh.Config{
+		Provider: "openai-chatcompat",
+		Model:    "gpt-4.1-mini",
+		BaseURL:  "https://api.openai.com/v1",
+		APIKey:   "your-api-key",
+	}, turnmesh.OneShotRequest{
+		SystemPrompt: "You rewrite vague support questions into search queries.",
+		Messages: []turnmesh.Message{
+			{Role: turnmesh.RoleUser, Content: "这个怎么开"},
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+
 	fmt.Println(result.Text)
 }
 ```
+
+适用场景：
+
+- query rewrite
+- classify / route
+- summarize
+- 提取下一步检索关键词
+
+详细说明见 [docs/one-shot-api.md](./docs/one-shot-api.md)。
 
 ## 对外 API
 
@@ -110,12 +157,15 @@ func main() {
 - `New`
 - `RunTurn`
 - `StreamTurn`
+- `RunOneShot`
 - `Message`
 - `Tool`
 - `ToolCall`
 - `ToolOutcome`
 - `TurnRequest`
 - `TurnResult`
+- `OneShotRequest`
+- `OneShotResult`
 
 `internal/*` 仍然是实现层，不承诺对外稳定。
 
@@ -127,6 +177,8 @@ func main() {
   包括企微消息处理、会话归属、群上下文、客服工具、预检索和 query rewrite。
 - `turnmesh` 接管 runtime
   包括 model 调用、tool call 调度、tool result 回填和多轮 tool loop。
+
+其中 query rewrite 现在也可以走 `RunOneShot(...)`，不需要外部业务仓库自己再写裸 HTTP 请求。
 
 详细方案见 [docs/ai-customer-integration.md](./docs/ai-customer-integration.md)。
 
@@ -149,9 +201,19 @@ func main() {
 - `internal/agent`
   agent task runtime。
 - `cmd/engine`
-  参考装配入口和本地验证入口。
+  参考装配入口和本地验证入口，不是外部业务仓库的推荐接入面。
 - `docs/*`
   规格、研究和设计记录。
+
+## cmd/engine 是什么
+
+`cmd/engine` 当前保留，但它的定位不是“turnmesh 的产品形态”，而是：
+
+- bootstrap 参考实现
+- 本地 smoke / assembly 验证入口
+- memory / MCP / agent runtime 的装配样板
+
+外部应用如果要接入 `turnmesh`，默认应优先使用根包 facade，而不是 import `cmd/engine`。
 
 ## 当前状态
 

@@ -1,7 +1,22 @@
 # DEV_LOG
 
-**最后同步**: 2026-04-13
-**状态**: Bootstrap 基线与 Runtime Unification v1 已落地，可在新窗口直接续做
+**最后同步**: 2026-04-14
+**状态**: Public facade、one-shot API 与 ai-customer 接入已落地，可直接按应用接入视角继续推进
+
+## 0. 2026-04-14 快照
+
+这次同步后，需要先记住三个事实：
+
+- `turnmesh` 的对外主入口已经是根包 [turnmesh.go](/Users/jayleonc/Developer/ts/turnmesh/turnmesh.go:1)
+- 多轮带工具场景走 `turnmesh.New(...).RunTurn(...)`
+- 单次无工具场景走 `turnmesh.RunOneShot(...)`
+
+另外：
+
+- `openai-chatcompat` 已经可用，专门面向 OpenAI-compatible `/chat/completions`
+- `ai-customer` 的主问答链路已经接到 `RunTurn(...)`
+- `ai-customer` 的 query rewrite 也已经接到 `RunOneShot(...)`
+- `cmd/engine` 仍保留，但它现在是 bootstrap/test harness，不是外部业务仓库的推荐接入点
 
 ## 1. 当前结论
 
@@ -18,6 +33,7 @@
 - MCP 最小 runtime：`internal/mcp`
 - OpenAI adapter：`internal/model/openai`
 - Anthropic adapter：`internal/model/anthropic`
+- OpenAI-compatible chat adapter：`internal/model/openaichat`
 - Provider registry：`internal/model/registry.go`
 - Streaming Tool Batch Runtime：`internal/executor/batch_runtime.go`
 - Agent Runtime：`internal/agent/runtime_impl.go`
@@ -27,6 +43,12 @@
 
 - `go test ./...` 通过
 - `go build ./...` 通过
+
+当前对外接入事实：
+
+- 根包 facade 已提供 `Message`、`Tool`、`TurnRequest`、`TurnResult`
+- 根包 facade 已提供 `OneShotRequest`、`OneShotResult`
+- 外部仓库已经不需要 import `internal/*`
 
 ## 2. 关键事实
 
