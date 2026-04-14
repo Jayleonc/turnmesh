@@ -12,3 +12,10 @@ bin/
 uploads
 node_modules/
 dist/
+
+# Local-only internal docs
+AGENTS.md
+CONSTITUTION.md
+DEV_LOG.md
+ROADMAP.md
+docs/
