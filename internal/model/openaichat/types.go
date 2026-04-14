@@ -10,16 +10,15 @@ const (
 )
 
 type chatCompletionsRequest struct {
-	Model             string            `json:"model"`
-	Messages          []chatMessage     `json:"messages,omitempty"`
-	Tools             []chatTool        `json:"tools,omitempty"`
-	ToolChoice        any               `json:"tool_choice,omitempty"`
-	ParallelToolCalls *bool             `json:"parallel_tool_calls,omitempty"`
-	Temperature       *float64          `json:"temperature,omitempty"`
-	MaxTokens         *int              `json:"max_tokens,omitempty"`
-	Seed              *int64            `json:"seed,omitempty"`
-	Metadata          map[string]string `json:"metadata,omitempty"`
-	Stream            bool              `json:"stream,omitempty"`
+	Model             string        `json:"model"`
+	Messages          []chatMessage `json:"messages,omitempty"`
+	Tools             []chatTool    `json:"tools,omitempty"`
+	ToolChoice        any           `json:"tool_choice,omitempty"`
+	ParallelToolCalls *bool         `json:"parallel_tool_calls,omitempty"`
+	Temperature       *float64      `json:"temperature,omitempty"`
+	MaxTokens         *int          `json:"max_tokens,omitempty"`
+	Seed              *int64        `json:"seed,omitempty"`
+	Stream            bool          `json:"stream,omitempty"`
 }
 
 type chatMessage struct {

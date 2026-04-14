@@ -194,8 +194,7 @@ func (s *Session) StreamTurn(ctx context.Context, input core.TurnInput) (<-chan 
 
 func (s *Session) buildRequest(input core.TurnInput) chatCompletionsRequest {
 	req := chatCompletionsRequest{
-		Model:    s.model,
-		Metadata: cloneMetadata(input.Metadata),
+		Model: s.model,
 	}
 	if s.temperature != nil {
 		value := *s.temperature
@@ -486,15 +485,4 @@ func cloneRawMessage(raw json.RawMessage) json.RawMessage {
 		return nil
 	}
 	return append(json.RawMessage(nil), raw...)
-}
-
-func cloneMetadata(values map[string]string) map[string]string {
-	if len(values) == 0 {
-		return nil
-	}
-	cloned := make(map[string]string, len(values))
-	for key, value := range values {
-		cloned[key] = value
-	}
-	return cloned
 }

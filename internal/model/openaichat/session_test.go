@@ -75,7 +75,6 @@ func TestSessionStreamsAssistantTextAndToolCalls(t *testing.T) {
 
 	events, err := sess.StreamTurn(context.Background(), core.TurnInput{
 		SystemPrompt: "prefer short answers",
-		Metadata:     map[string]string{"turn": "1"},
 		Messages: []core.Message{
 			{Role: core.MessageRoleUser, Content: "say hello"},
 		},
@@ -124,9 +123,6 @@ func TestSessionStreamsAssistantTextAndToolCalls(t *testing.T) {
 	}
 	if captured.ToolChoice != defaultToolChoiceValue {
 		t.Fatalf("tool_choice = %#v, want %q", captured.ToolChoice, defaultToolChoiceValue)
-	}
-	if captured.Metadata["turn"] != "1" {
-		t.Fatalf("metadata = %#v, want turn=1", captured.Metadata)
 	}
 	if captured.ParallelToolCalls == nil || !*captured.ParallelToolCalls {
 		t.Fatal("parallel_tool_calls not enabled")
