@@ -63,16 +63,32 @@ const (
 type Error struct {
 	Code    string
 	Message string
+	Cause   string
+	Details map[string]string
 }
 
 func (e *Error) Error() string {
 	if e == nil {
 		return ""
 	}
+	if e.Message != "" && e.Cause != "" {
+		return e.Message + ": " + e.Cause
+	}
 	if e.Message != "" {
 		return e.Message
 	}
+	if e.Cause != "" {
+		return e.Cause
+	}
 	return e.Code
+}
+
+func AsError(err error) (*Error, bool) {
+	var target *Error
+	if errors.As(err, &target) {
+		return target, true
+	}
+	return nil, false
 }
 
 type Message struct {
@@ -575,9 +591,15 @@ func publicError(err *core.Error) *Error {
 	if err == nil {
 		return nil
 	}
+	cause := ""
+	if err.Cause != nil {
+		cause = err.Cause.Error()
+	}
 	return &Error{
 		Code:    string(err.Code),
 		Message: err.Message,
+		Cause:   cause,
+		Details: cloneMetadata(err.Details),
 	}
 }
 
@@ -585,9 +607,15 @@ func coreError(err *Error) *core.Error {
 	if err == nil {
 		return nil
 	}
+	var cause error
+	if err.Cause != "" {
+		cause = errors.New(err.Cause)
+	}
 	return &core.Error{
 		Code:    core.ErrorCode(err.Code),
 		Message: err.Message,
+		Cause:   cause,
+		Details: cloneMetadata(err.Details),
 	}
 }
 

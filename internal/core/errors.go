@@ -27,6 +27,9 @@ func (e *Error) Error() string {
 	if e == nil {
 		return ""
 	}
+	if e.Message != "" && e.Cause != nil {
+		return e.Message + ": " + e.Cause.Error()
+	}
 	if e.Message != "" {
 		return e.Message
 	}

@@ -3,6 +3,7 @@ package turnmesh
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -154,5 +155,52 @@ func TestRunOneShotRejectsToolCalls(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "use RunTurn") {
 		t.Fatalf("error = %q, want use RunTurn", err.Error())
+	}
+}
+
+func TestRunOneShotExposesProviderCauseAndDetails(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"invalid api key"}}`))
+	}))
+	defer server.Close()
+
+	_, err := RunOneShot(context.Background(), Config{
+		Provider:   "openai-chatcompat",
+		Model:      "gpt-4o-mini",
+		BaseURL:    server.URL,
+		APIKey:     "sk-test",
+		HTTPClient: server.Client(),
+	}, OneShotRequest{
+		Messages: []Message{
+			{Role: RoleUser, Content: "hello"},
+		},
+	})
+	if err == nil {
+		t.Fatal("RunOneShot() error = nil, want provider error")
+	}
+	if !strings.Contains(err.Error(), "status 401") {
+		t.Fatalf("error = %q, want status 401 cause", err.Error())
+	}
+
+	tmErr, ok := AsError(err)
+	if !ok {
+		t.Fatalf("AsError() = false, want true; err=%T", err)
+	}
+	if tmErr.Code != "unauthorized" {
+		t.Fatalf("code = %q, want unauthorized", tmErr.Code)
+	}
+	if tmErr.Details["http_status"] != "401" {
+		t.Fatalf("details = %#v, want http_status=401", tmErr.Details)
+	}
+	if !strings.Contains(tmErr.Cause, "invalid api key") {
+		t.Fatalf("cause = %q, want invalid api key", tmErr.Cause)
+	}
+
+	wrapped := errors.Join(errors.New("outer"), err)
+	if _, ok := AsError(wrapped); !ok {
+		t.Fatal("AsError() on wrapped error = false, want true")
 	}
 }

@@ -15,6 +15,23 @@ import (
 	"github.com/Jayleonc/turnmesh/internal/model"
 )
 
+type requestError struct {
+	StatusCode int
+	Endpoint   string
+	Body       string
+}
+
+func (e *requestError) Error() string {
+	if e == nil {
+		return ""
+	}
+	body := strings.TrimSpace(e.Body)
+	if body == "" {
+		return fmt.Sprintf("openai chat completions status %d", e.StatusCode)
+	}
+	return fmt.Sprintf("openai chat completions status %d: %s", e.StatusCode, body)
+}
+
 type Session struct {
 	id       string
 	provider string
@@ -90,10 +107,13 @@ func (s *Session) StreamTurn(ctx context.Context, input core.TurnInput) (<-chan 
 
 		resp, err := s.doChatCompletion(ctx, req)
 		if err != nil {
+			wrapped := wrapRequestError(err).
+				WithDetail("provider", s.provider).
+				WithDetail("model", s.model)
 			emit(core.TurnEvent{
 				Kind:   core.TurnEventError,
 				Status: core.TurnStatusFailed,
-				Error:  core.WrapError(core.ErrorCodeInternal, "openai chat completions request failed", err),
+				Error:  wrapped,
 			})
 			return
 		}
@@ -105,7 +125,11 @@ func (s *Session) StreamTurn(ctx context.Context, input core.TurnInput) (<-chan 
 			emit(core.TurnEvent{
 				Kind:   core.TurnEventError,
 				Status: core.TurnStatusFailed,
-				Error:  core.NewError(core.ErrorCodeInternal, message),
+				Error: core.NewError(core.ErrorCodeInternal, message).
+					WithDetail("provider", s.provider).
+					WithDetail("model", s.model).
+					WithDetail("provider_error_code", resp.Error.Code).
+					WithDetail("provider_error_type", resp.Error.Type),
 				Metadata: map[string]string{
 					"provider_error_code": resp.Error.Code,
 					"provider_error_type": resp.Error.Type,
@@ -231,7 +255,11 @@ func (s *Session) doChatCompletion(ctx context.Context, req chatCompletionsReque
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("openai chat completions status %d: %s", resp.StatusCode, strings.TrimSpace(string(payload)))
+		return nil, &requestError{
+			StatusCode: resp.StatusCode,
+			Endpoint:   url,
+			Body:       strings.TrimSpace(string(payload)),
+		}
 	}
 
 	var out chatCompletionsResponse
@@ -239,6 +267,42 @@ func (s *Session) doChatCompletion(ctx context.Context, req chatCompletionsReque
 		return nil, err
 	}
 	return &out, nil
+}
+
+func wrapRequestError(err error) *core.Error {
+	code := core.ErrorCodeInternal
+	var reqErr *requestError
+	if errors.As(err, &reqErr) {
+		switch reqErr.StatusCode {
+		case http.StatusBadRequest:
+			code = core.ErrorCodeValidation
+		case http.StatusUnauthorized, http.StatusForbidden:
+			code = core.ErrorCodeUnauthorized
+		case http.StatusNotFound:
+			code = core.ErrorCodeNotFound
+		case http.StatusRequestTimeout, http.StatusGatewayTimeout:
+			code = core.ErrorCodeTimeout
+		}
+	}
+
+	wrapped := core.WrapError(code, "openai chat completions request failed", err)
+	if reqErr != nil {
+		wrapped = wrapped.
+			WithDetail("http_status", fmt.Sprintf("%d", reqErr.StatusCode)).
+			WithDetail("endpoint", reqErr.Endpoint)
+		if reqErr.Body != "" {
+			wrapped = wrapped.WithDetail("response_body", truncateDetail(reqErr.Body, 512))
+		}
+	}
+	return wrapped
+}
+
+func truncateDetail(value string, max int) string {
+	value = strings.TrimSpace(value)
+	if max <= 0 || len(value) <= max {
+		return value
+	}
+	return value[:max] + "...(truncated)"
 }
 
 func buildChatMessages(messages []core.Message) []chatMessage {
