@@ -51,6 +51,8 @@ type TurnEventKind string
 const (
 	TurnEventStarted          TurnEventKind = "started"
 	TurnEventMessage          TurnEventKind = "message"
+	TurnEventCitation         TurnEventKind = "citation"
+	TurnEventClarification    TurnEventKind = "clarification"
 	TurnEventDelta            TurnEventKind = "delta"
 	TurnEventToolCall         TurnEventKind = "tool_call"
 	TurnEventToolResult       TurnEventKind = "tool_result"
@@ -74,6 +76,7 @@ type TurnEvent struct {
 	Timestamp  time.Time         `json:"timestamp,omitempty"`
 	Status     TurnStatus        `json:"status,omitempty"`
 	Message    *Message          `json:"message,omitempty"`
+	Payload    json.RawMessage   `json:"payload,omitempty"`
 	ToolCall   *ToolInvocation   `json:"tool_call,omitempty"`
 	ToolResult *ToolResult       `json:"tool_result,omitempty"`
 	Approval   *ApprovalRequest  `json:"approval,omitempty"`

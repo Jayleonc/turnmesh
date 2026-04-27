@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Jayleonc/turnmesh/internal/core"
+	"github.com/Jayleonc/turnmesh/internal/eventctx"
 	"github.com/Jayleonc/turnmesh/internal/executor"
 	"github.com/Jayleonc/turnmesh/internal/model"
 )
@@ -54,6 +55,27 @@ type stubDispatcher struct {
 
 func (s *stubDispatcher) ExecuteTool(_ context.Context, call core.ToolInvocation) (core.ToolResult, error) {
 	s.calls = append(s.calls, call)
+	return s.result, s.err
+}
+
+type emittingDispatcher struct {
+	calls  []core.ToolInvocation
+	result core.ToolResult
+	err    error
+}
+
+func (s *emittingDispatcher) ExecuteTool(ctx context.Context, call core.ToolInvocation) (core.ToolResult, error) {
+	s.calls = append(s.calls, call)
+	eventctx.Emit(ctx, core.TurnEvent{
+		Kind:    core.TurnEventCitation,
+		Status:  core.TurnStatusRunning,
+		Payload: json.RawMessage(`{"source":"doc-1","text":"alpha"}`),
+	})
+	eventctx.Emit(ctx, core.TurnEvent{
+		Kind:    core.TurnEventClarification,
+		Status:  core.TurnStatusWaiting,
+		Payload: json.RawMessage(`{"question":"need more context"}`),
+	})
 	return s.result, s.err
 }
 
@@ -220,6 +242,67 @@ func TestStreamTurnRoutesToolCallToDispatcher(t *testing.T) {
 	}
 	if len(secondInput.Messages[1].Parts) != 1 || secondInput.Messages[1].Parts[0].ToolResult == nil {
 		t.Fatalf("tool result message = %#v, want one tool result part", secondInput.Messages[1])
+	}
+}
+
+func TestStreamTurnPropagatesContextEventsFromToolExecution(t *testing.T) {
+	dispatcher := &emittingDispatcher{result: core.ToolResult{
+		InvocationID: "tool-1",
+		Tool:         "bash",
+		Status:       core.ToolStatusSucceeded,
+		Output:       "done",
+	}}
+	session := &stubSession{
+		streams: [][]core.TurnEvent{
+			{
+				{
+					Kind:    core.TurnEventMessage,
+					Message: &core.Message{Role: core.MessageRoleAssistant, Content: "checking"},
+				},
+				{
+					Kind:     core.TurnEventToolCall,
+					ToolCall: &core.ToolInvocation{ID: "tool-1", Tool: "bash", Arguments: json.RawMessage(`{"command":"pwd"}`)},
+				},
+				{Kind: core.TurnEventCompleted},
+			},
+			{
+				{
+					Kind:    core.TurnEventMessage,
+					Message: &core.Message{Role: core.MessageRoleAssistant, Content: "done"},
+				},
+				{Kind: core.TurnEventCompleted},
+			},
+		},
+	}
+
+	engine := New(Config{
+		Session: session,
+		Tools:   dispatcher,
+	})
+	if err := engine.Boot(context.Background()); err != nil {
+		t.Fatalf("Boot() error = %v", err)
+	}
+
+	events, err := engine.StreamTurn(context.Background(), core.TurnInput{})
+	if err != nil {
+		t.Fatalf("StreamTurn() error = %v", err)
+	}
+
+	got := collectEvents(events)
+	if len(dispatcher.calls) != 1 {
+		t.Fatalf("dispatcher calls = %d, want 1", len(dispatcher.calls))
+	}
+	if got[3].Kind != core.TurnEventCitation {
+		t.Fatalf("event[3] = %q, want %q", got[3].Kind, core.TurnEventCitation)
+	}
+	if got[4].Kind != core.TurnEventClarification {
+		t.Fatalf("event[4] = %q, want %q", got[4].Kind, core.TurnEventClarification)
+	}
+	if got[3].Payload == nil || string(got[3].Payload) != `{"source":"doc-1","text":"alpha"}` {
+		t.Fatalf("citation payload = %s, want doc-1 alpha", string(got[3].Payload))
+	}
+	if got[4].Payload == nil || string(got[4].Payload) != `{"question":"need more context"}` {
+		t.Fatalf("clarification payload = %s, want question", string(got[4].Payload))
 	}
 }
 

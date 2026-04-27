@@ -204,3 +204,38 @@ func TestRunOneShotExposesProviderCauseAndDetails(t *testing.T) {
 		t.Fatal("AsError() on wrapped error = false, want true")
 	}
 }
+
+func TestEmitEventFromContextForwardsGenericEvents(t *testing.T) {
+	t.Parallel()
+
+	var events []Event
+	ctx := WithEventEmitter(context.Background(), func(event Event) bool {
+		events = append(events, event)
+		return true
+	})
+
+	if ok := EmitEvent(ctx, Event{
+		Kind:    EventCitation,
+		Status:  TurnRunning,
+		Payload: json.RawMessage(`{"source":"doc-1","text":"alpha"}`),
+	}); !ok {
+		t.Fatal("EmitEvent() for citation returned false")
+	}
+	if ok := EmitEvent(ctx, Event{
+		Kind:    EventClarification,
+		Status:  TurnWaiting,
+		Payload: json.RawMessage(`{"question":"need more context"}`),
+	}); !ok {
+		t.Fatal("EmitEvent() for clarification returned false")
+	}
+
+	if len(events) != 2 {
+		t.Fatalf("len(events) = %d, want 2", len(events))
+	}
+	if events[0].Kind != EventCitation || string(events[0].Payload) != `{"source":"doc-1","text":"alpha"}` {
+		t.Fatalf("citation event = %#v, want citation payload", events[0])
+	}
+	if events[1].Kind != EventClarification || string(events[1].Payload) != `{"question":"need more context"}` {
+		t.Fatalf("clarification event = %#v, want clarification payload", events[1])
+	}
+}

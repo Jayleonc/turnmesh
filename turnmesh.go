@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Jayleonc/turnmesh/internal/core"
+	"github.com/Jayleonc/turnmesh/internal/eventctx"
 	"github.com/Jayleonc/turnmesh/internal/executor"
 	"github.com/Jayleonc/turnmesh/internal/model"
 	"github.com/Jayleonc/turnmesh/internal/model/anthropic"
@@ -52,12 +53,14 @@ const (
 type EventKind string
 
 const (
-	EventStarted    EventKind = "started"
-	EventMessage    EventKind = "message"
-	EventToolCall   EventKind = "tool_call"
-	EventToolResult EventKind = "tool_result"
-	EventCompleted  EventKind = "completed"
-	EventError      EventKind = "error"
+	EventStarted       EventKind = "started"
+	EventMessage       EventKind = "message"
+	EventCitation      EventKind = "citation"
+	EventClarification EventKind = "clarification"
+	EventToolCall      EventKind = "tool_call"
+	EventToolResult    EventKind = "tool_result"
+	EventCompleted     EventKind = "completed"
+	EventError         EventKind = "error"
 )
 
 type Error struct {
@@ -134,6 +137,7 @@ type Event struct {
 	Kind       EventKind
 	Status     TurnStatus
 	Message    *Message
+	Payload    json.RawMessage
 	ToolCall   *ToolCall
 	ToolResult *ToolResult
 	Error      *Error
@@ -308,6 +312,21 @@ func (r *Runtime) RunTurn(ctx context.Context, req TurnRequest) (TurnResult, err
 		}
 	}
 	return result, nil
+}
+
+type EventEmitter func(Event) bool
+
+func WithEventEmitter(ctx context.Context, emitter EventEmitter) context.Context {
+	if ctx == nil || emitter == nil {
+		return ctx
+	}
+	return eventctx.WithEmitter(ctx, func(event core.TurnEvent) bool {
+		return emitter(publicEvent(event))
+	})
+}
+
+func EmitEvent(ctx context.Context, event Event) bool {
+	return eventctx.Emit(ctx, coreEvent(event))
 }
 
 func runOneShot(ctx context.Context, session model.Session, req OneShotRequest) (OneShotResult, error) {
@@ -551,6 +570,7 @@ func publicEvent(event core.TurnEvent) Event {
 	out := Event{
 		Kind:     EventKind(event.Kind),
 		Status:   TurnStatus(event.Status),
+		Payload:  cloneRaw(event.Payload),
 		Metadata: cloneMetadata(event.Metadata),
 		Error:    publicError(event.Error),
 	}
@@ -580,6 +600,47 @@ func publicEvent(event core.TurnEvent) Event {
 			Output:       event.ToolResult.Output,
 			Structured:   cloneRaw(event.ToolResult.Structured),
 			Error:        publicError(event.ToolResult.Error),
+			Duration:     event.ToolResult.Duration,
+			Metadata:     cloneMetadata(event.ToolResult.Metadata),
+		}
+	}
+	return out
+}
+
+func coreEvent(event Event) core.TurnEvent {
+	out := core.TurnEvent{
+		Kind:     core.TurnEventKind(event.Kind),
+		Status:   core.TurnStatus(event.Status),
+		Payload:  cloneRaw(event.Payload),
+		Metadata: cloneMetadata(event.Metadata),
+		Error:    coreError(event.Error),
+	}
+	if event.Message != nil {
+		out.Message = &core.Message{
+			Role:     core.MessageRole(event.Message.Role),
+			Content:  event.Message.Content,
+			Metadata: cloneMetadata(event.Message.Metadata),
+		}
+	}
+	if event.ToolCall != nil {
+		out.ToolCall = &core.ToolInvocation{
+			ID:         event.ToolCall.ID,
+			Tool:       event.ToolCall.Name,
+			Input:      cloneRaw(event.ToolCall.Input),
+			Arguments:  cloneRaw(event.ToolCall.Arguments),
+			Caller:     event.ToolCall.Caller,
+			ApprovalID: event.ToolCall.ApprovalID,
+			Metadata:   cloneMetadata(event.ToolCall.Metadata),
+		}
+	}
+	if event.ToolResult != nil {
+		out.ToolResult = &core.ToolResult{
+			InvocationID: event.ToolResult.InvocationID,
+			Tool:         event.ToolResult.Tool,
+			Status:       core.ToolStatus(event.ToolResult.Status),
+			Output:       event.ToolResult.Output,
+			Structured:   cloneRaw(event.ToolResult.Structured),
+			Error:        coreError(event.ToolResult.Error),
 			Duration:     event.ToolResult.Duration,
 			Metadata:     cloneMetadata(event.ToolResult.Metadata),
 		}

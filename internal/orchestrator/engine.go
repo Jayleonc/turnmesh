@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Jayleonc/turnmesh/internal/core"
+	"github.com/Jayleonc/turnmesh/internal/eventctx"
 	"github.com/Jayleonc/turnmesh/internal/feedback"
 )
 
@@ -86,7 +87,11 @@ func (e *Engine) runTurn(ctx context.Context, turnID string, req core.TurnInput,
 
 	sequence := int64(0)
 	emittedEvents := make([]core.TurnEvent, 0, 16)
+	var emitMu sync.Mutex
 	emit := func(event core.TurnEvent) bool {
+		emitMu.Lock()
+		defer emitMu.Unlock()
+
 		event.TurnID = turnID
 		event.Sequence = sequence
 		if event.Timestamp.IsZero() {
@@ -297,8 +302,12 @@ func (e *Engine) executeToolCalls(
 		return nil, true
 	}
 
+	toolCtx := eventctx.WithEmitter(ctx, func(event core.TurnEvent) bool {
+		return emit(event)
+	})
+
 	if e.cfg.ToolBatch != nil {
-		report, _ := e.cfg.ToolBatch.Run(ctx, calls)
+		report, _ := e.cfg.ToolBatch.Run(toolCtx, calls)
 		results := make([]core.ToolResult, 0, len(report.Results))
 		for _, result := range report.Results {
 			cloned := cloneToolResult(result)
@@ -316,7 +325,7 @@ func (e *Engine) executeToolCalls(
 
 	results := make([]core.ToolResult, 0, len(calls))
 	for _, call := range calls {
-		result, ok := e.executeToolCall(ctx, emit, call)
+		result, ok := e.executeToolCall(toolCtx, emit, call)
 		if !ok {
 			return results, false
 		}
@@ -576,6 +585,9 @@ func cloneTurnEvents(events []core.TurnEvent) []core.TurnEvent {
 
 func cloneTurnEvent(event core.TurnEvent) core.TurnEvent {
 	cloned := event
+	if len(event.Payload) > 0 {
+		cloned.Payload = append([]byte(nil), event.Payload...)
+	}
 	if event.Message != nil {
 		message := cloneMessage(*event.Message)
 		cloned.Message = &message
@@ -687,6 +699,10 @@ func (e *Engine) emitFeedback(ctx context.Context, event feedback.Event) {
 
 func defaultStatusForEvent(kind core.TurnEventKind) core.TurnStatus {
 	switch kind {
+	case core.TurnEventClarification:
+		return core.TurnStatusWaiting
+	case core.TurnEventCitation:
+		return core.TurnStatusRunning
 	case core.TurnEventCompleted:
 		return core.TurnStatusCompleted
 	case core.TurnEventError:
