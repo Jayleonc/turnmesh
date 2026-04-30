@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -97,7 +98,156 @@ func AsError(err error) (*Error, bool) {
 type Message struct {
 	Role     MessageRole
 	Content  string
+	Parts    []MessagePart
 	Metadata map[string]string
+}
+
+type MessagePartType string
+
+const (
+	MessagePartText  MessagePartType = "text"
+	MessagePartImage MessagePartType = "image"
+	MessagePartFile  MessagePartType = "file"
+)
+
+type MessagePart struct {
+	Type     MessagePartType
+	Text     string
+	Name     string
+	MIMEType string
+	Data     []byte
+	URL      string
+	Detail   string
+	Metadata map[string]string
+}
+
+type PartOption func(*MessagePart)
+
+func TextMessage(role MessageRole, text string) Message {
+	return Message{Role: role, Content: text}
+}
+
+func SystemText(text string) Message {
+	return TextMessage(RoleSystem, text)
+}
+
+func UserText(text string) Message {
+	return TextMessage(RoleUser, text)
+}
+
+func AssistantText(text string) Message {
+	return TextMessage(RoleAssistant, text)
+}
+
+func MessageWithParts(role MessageRole, parts ...MessagePart) Message {
+	return Message{Role: role, Parts: clonePublicMessageParts(parts)}
+}
+
+func UserParts(parts ...MessagePart) Message {
+	return MessageWithParts(RoleUser, parts...)
+}
+
+func TextPart(text string) MessagePart {
+	return MessagePart{Type: MessagePartText, Text: text}
+}
+
+func ImageURLPart(url string, opts ...PartOption) MessagePart {
+	part := MessagePart{Type: MessagePartImage, URL: strings.TrimSpace(url)}
+	applyPartOptions(&part, opts)
+	return part
+}
+
+func ImageBytesPart(mimeType string, data []byte, opts ...PartOption) MessagePart {
+	part := MessagePart{Type: MessagePartImage, MIMEType: strings.TrimSpace(mimeType), Data: cloneBytes(data)}
+	if part.MIMEType == "" {
+		part.MIMEType = DetectMIMEType(part.Data)
+	}
+	applyPartOptions(&part, opts)
+	return part
+}
+
+func FileURLPart(mimeType, url string, opts ...PartOption) MessagePart {
+	part := MessagePart{Type: MessagePartFile, MIMEType: strings.TrimSpace(mimeType), URL: strings.TrimSpace(url)}
+	applyPartOptions(&part, opts)
+	return part
+}
+
+func FileBytesPart(mimeType string, data []byte, opts ...PartOption) MessagePart {
+	part := MessagePart{Type: MessagePartFile, MIMEType: strings.TrimSpace(mimeType), Data: cloneBytes(data)}
+	if part.MIMEType == "" {
+		part.MIMEType = DetectMIMEType(part.Data)
+	}
+	applyPartOptions(&part, opts)
+	return part
+}
+
+func WithPartName(name string) PartOption {
+	return func(part *MessagePart) {
+		part.Name = strings.TrimSpace(name)
+	}
+}
+
+func WithPartDetail(detail string) PartOption {
+	return func(part *MessagePart) {
+		part.Detail = strings.TrimSpace(detail)
+	}
+}
+
+func WithPartMetadata(metadata map[string]string) PartOption {
+	return func(part *MessagePart) {
+		part.Metadata = cloneMetadata(metadata)
+	}
+}
+
+func WithPartMetadataValue(key, value string) PartOption {
+	return func(part *MessagePart) {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return
+		}
+		if part.Metadata == nil {
+			part.Metadata = map[string]string{}
+		}
+		part.Metadata[key] = value
+	}
+}
+
+func WithPartSourcePath(path string) PartOption {
+	return WithPartMetadataValue("source_path", path)
+}
+
+func DetectMIMEType(data []byte) string {
+	if len(data) == 0 {
+		return ""
+	}
+	mimeType := http.DetectContentType(data)
+	if mimeType == "application/octet-stream" {
+		return ""
+	}
+	return mimeType
+}
+
+func (p MessagePart) IsImage() bool {
+	if p.Type == MessagePartImage {
+		return true
+	}
+	return p.Type == MessagePartFile && strings.HasPrefix(strings.ToLower(strings.TrimSpace(p.MIMEType)), "image/")
+}
+
+func (p MessagePart) HasMedia() bool {
+	return strings.TrimSpace(p.URL) != "" || len(p.Data) > 0
+}
+
+func (p MessagePart) HasInlineData() bool {
+	return len(p.Data) > 0
+}
+
+func applyPartOptions(part *MessagePart, opts []PartOption) {
+	for _, opt := range opts {
+		if opt != nil {
+			opt(part)
+		}
+	}
 }
 
 type Tool struct {
@@ -162,6 +312,7 @@ type Config struct {
 	APIKey          string
 	Temperature     *float64
 	MaxOutputTokens *int
+	MaxMediaBytes   int64
 	HTTPClient      *http.Client
 	Tools           []Tool
 }
@@ -196,8 +347,9 @@ type OneShotResult struct {
 }
 
 type Runtime struct {
-	engine  *orchestrator.Engine
-	session model.Session
+	engine        *orchestrator.Engine
+	session       model.Session
+	maxMediaBytes int64
 }
 
 func New(ctx context.Context, cfg Config) (*Runtime, error) {
@@ -223,8 +375,9 @@ func New(ctx context.Context, cfg Config) (*Runtime, error) {
 	}
 
 	return &Runtime{
-		engine:  engine,
-		session: session,
+		engine:        engine,
+		session:       session,
+		maxMediaBytes: cfg.MaxMediaBytes,
 	}, nil
 }
 
@@ -233,6 +386,9 @@ func RunOneShot(ctx context.Context, cfg Config, req OneShotRequest) (OneShotRes
 		return OneShotResult{}, errors.New("turnmesh: nil context")
 	}
 	if err := ctx.Err(); err != nil {
+		return OneShotResult{}, err
+	}
+	if err := validateMessages(req.Messages, cfg.MaxMediaBytes); err != nil {
 		return OneShotResult{}, err
 	}
 
@@ -255,6 +411,9 @@ func (r *Runtime) Close() error {
 func (r *Runtime) StreamTurn(ctx context.Context, req TurnRequest) (<-chan Event, error) {
 	if r == nil || r.engine == nil {
 		return nil, errors.New("turnmesh: runtime is not initialized")
+	}
+	if err := validateMessages(req.Messages, r.maxMediaBytes); err != nil {
+		return nil, err
 	}
 
 	stream, err := r.engine.StreamTurn(ctx, core.TurnInput{
@@ -560,7 +719,111 @@ func coreMessages(messages []Message) []core.Message {
 		out = append(out, core.Message{
 			Role:     core.MessageRole(message.Role),
 			Content:  message.Content,
+			Parts:    coreMessageParts(message.Parts),
 			Metadata: cloneMetadata(message.Metadata),
+		})
+	}
+	return out
+}
+
+func coreMessageParts(parts []MessagePart) []core.MessagePart {
+	if len(parts) == 0 {
+		return nil
+	}
+	out := make([]core.MessagePart, 0, len(parts))
+	for _, part := range parts {
+		part = normalizePublicMessagePart(part)
+		out = append(out, core.MessagePart{
+			Type:     core.MessagePartType(part.Type),
+			Text:     part.Text,
+			Name:     part.Name,
+			MimeType: part.MIMEType,
+			Data:     append([]byte(nil), part.Data...),
+			URL:      part.URL,
+			Detail:   part.Detail,
+			Metadata: cloneMetadata(part.Metadata),
+		})
+	}
+	return out
+}
+
+func validateMessages(messages []Message, maxMediaBytes int64) error {
+	for i, message := range messages {
+		if strings.TrimSpace(string(message.Role)) == "" {
+			return fmt.Errorf("turnmesh: messages[%d] role is required", i)
+		}
+		for j, part := range message.Parts {
+			if err := validateMessagePart(part, maxMediaBytes); err != nil {
+				return fmt.Errorf("turnmesh: messages[%d].parts[%d]: %w", i, j, err)
+			}
+		}
+	}
+	return nil
+}
+
+func validateMessagePart(part MessagePart, maxMediaBytes int64) error {
+	switch part.Type {
+	case MessagePartText:
+		if strings.TrimSpace(part.Text) == "" {
+			return errors.New("text part requires text")
+		}
+		return nil
+	case MessagePartImage, MessagePartFile:
+		hasURL := strings.TrimSpace(part.URL) != ""
+		hasData := len(part.Data) > 0
+		if !hasURL && !hasData {
+			return errors.New("media part requires url or data")
+		}
+		if hasURL && hasData {
+			return errors.New("media part must use either url or data, not both")
+		}
+		if maxMediaBytes > 0 && int64(len(part.Data)) > maxMediaBytes {
+			return fmt.Errorf("media data size %d exceeds max_media_bytes %d", len(part.Data), maxMediaBytes)
+		}
+		mimeType := strings.ToLower(strings.TrimSpace(part.MIMEType))
+		if part.Type == MessagePartImage && mimeType != "" && !strings.HasPrefix(mimeType, "image/") {
+			return fmt.Errorf("image part requires image mime type, got %q", part.MIMEType)
+		}
+		return nil
+	case "":
+		return errors.New("part type is required")
+	default:
+		return fmt.Errorf("unsupported part type %q", part.Type)
+	}
+}
+
+func normalizePublicMessagePart(part MessagePart) MessagePart {
+	part.Text = strings.TrimSpace(part.Text)
+	part.Name = strings.TrimSpace(part.Name)
+	part.MIMEType = strings.TrimSpace(part.MIMEType)
+	part.URL = strings.TrimSpace(part.URL)
+	part.Detail = strings.TrimSpace(part.Detail)
+	part.Data = cloneBytes(part.Data)
+	part.Metadata = cloneMetadata(part.Metadata)
+	if (part.Type == MessagePartImage || part.Type == MessagePartFile) && part.MIMEType == "" && len(part.Data) > 0 {
+		part.MIMEType = DetectMIMEType(part.Data)
+	}
+	if part.Type == MessagePartImage && part.MIMEType == "" && len(part.Data) > 0 {
+		part.MIMEType = "image/png"
+	}
+	return part
+}
+
+func publicMessageParts(parts []core.MessagePart) []MessagePart {
+	if len(parts) == 0 {
+		return nil
+	}
+	out := make([]MessagePart, 0, len(parts))
+	for _, part := range parts {
+		out = append(out, MessagePart{
+			Type:     MessagePartType(part.Type),
+			Text:     part.Text,
+			Name:     part.Name,
+			MIMEType: part.MimeType,
+			Data:     append([]byte(nil), part.Data...),
+			URL:      part.URL,
+			Detail:   part.Detail,
+			Metadata: cloneMetadata(part.Metadata),
 		})
 	}
 	return out
@@ -578,6 +841,7 @@ func publicEvent(event core.TurnEvent) Event {
 		out.Message = &Message{
 			Role:     MessageRole(event.Message.Role),
 			Content:  event.Message.Content,
+			Parts:    publicMessageParts(event.Message.Parts),
 			Metadata: cloneMetadata(event.Message.Metadata),
 		}
 	}
@@ -619,6 +883,7 @@ func coreEvent(event Event) core.TurnEvent {
 		out.Message = &core.Message{
 			Role:     core.MessageRole(event.Message.Role),
 			Content:  event.Message.Content,
+			Parts:    coreMessageParts(event.Message.Parts),
 			Metadata: cloneMetadata(event.Message.Metadata),
 		}
 	}
@@ -687,6 +952,24 @@ func cloneMetadata(values map[string]string) map[string]string {
 	cloned := make(map[string]string, len(values))
 	for key, value := range values {
 		cloned[key] = value
+	}
+	return cloned
+}
+
+func cloneBytes(data []byte) []byte {
+	if len(data) == 0 {
+		return nil
+	}
+	return append([]byte(nil), data...)
+}
+
+func clonePublicMessageParts(parts []MessagePart) []MessagePart {
+	if len(parts) == 0 {
+		return nil
+	}
+	cloned := make([]MessagePart, 0, len(parts))
+	for _, part := range parts {
+		cloned = append(cloned, normalizePublicMessagePart(part))
 	}
 	return cloned
 }

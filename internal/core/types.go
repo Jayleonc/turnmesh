@@ -18,6 +18,7 @@ type MessagePartType string
 
 const (
 	MessagePartText       MessagePartType = "text"
+	MessagePartImage      MessagePartType = "image"
 	MessagePartToolCall   MessagePartType = "tool_call"
 	MessagePartToolResult MessagePartType = "tool_result"
 	MessagePartFile       MessagePartType = "file"
@@ -29,6 +30,8 @@ type MessagePart struct {
 	Name       string            `json:"name,omitempty"`
 	MimeType   string            `json:"mime_type,omitempty"`
 	Data       []byte            `json:"data,omitempty"`
+	URL        string            `json:"url,omitempty"`
+	Detail     string            `json:"detail,omitempty"`
 	ToolCall   *ToolInvocation   `json:"tool_call,omitempty"`
 	ToolResult *ToolResult       `json:"tool_result,omitempty"`
 	Metadata   map[string]string `json:"metadata,omitempty"`

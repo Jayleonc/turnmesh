@@ -3,6 +3,7 @@ package openaichat
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -322,9 +323,9 @@ func buildChatMessages(messages []core.Message) []chatMessage {
 
 func buildStandardMessage(msg core.Message) (chatMessage, bool) {
 	chatMsg := chatMessage{Role: string(msg.Role)}
-	text := strings.TrimSpace(messageTextFromCoreMessage(msg))
-	if text != "" {
-		chatMsg.Content = text
+	content := buildMessageContent(msg)
+	if content != nil {
+		chatMsg.Content = content
 	}
 	for _, part := range msg.Parts {
 		if part.ToolCall == nil {
@@ -339,10 +340,61 @@ func buildStandardMessage(msg core.Message) (chatMessage, bool) {
 			},
 		})
 	}
-	if text == "" && len(chatMsg.ToolCalls) == 0 {
+	if chatMsg.Content == nil && len(chatMsg.ToolCalls) == 0 {
 		return chatMessage{}, false
 	}
 	return chatMsg, true
+}
+
+func buildMessageContent(msg core.Message) any {
+	parts := make([]chatContentPart, 0, len(msg.Parts)+1)
+	if text := strings.TrimSpace(msg.Content); text != "" {
+		parts = append(parts, chatContentPart{Type: "text", Text: text})
+	}
+	for _, part := range msg.Parts {
+		switch {
+		case part.Type == core.MessagePartText && strings.TrimSpace(part.Text) != "":
+			parts = append(parts, chatContentPart{Type: "text", Text: part.Text})
+		case isImagePart(part):
+			if imageURL := imageURLFromPart(part); imageURL != "" {
+				parts = append(parts, chatContentPart{
+					Type: "image_url",
+					ImageURL: &chatImageURL{
+						URL:    imageURL,
+						Detail: strings.TrimSpace(part.Detail),
+					},
+				})
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	if len(parts) == 1 && parts[0].Type == "text" {
+		return strings.TrimSpace(parts[0].Text)
+	}
+	return parts
+}
+
+func isImagePart(part core.MessagePart) bool {
+	if part.Type == core.MessagePartImage {
+		return true
+	}
+	return part.Type == core.MessagePartFile && strings.HasPrefix(strings.ToLower(strings.TrimSpace(part.MimeType)), "image/")
+}
+
+func imageURLFromPart(part core.MessagePart) string {
+	if url := strings.TrimSpace(part.URL); url != "" {
+		return url
+	}
+	if len(part.Data) == 0 {
+		return ""
+	}
+	mimeType := strings.TrimSpace(part.MimeType)
+	if mimeType == "" {
+		mimeType = "image/png"
+	}
+	return "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(part.Data)
 }
 
 func buildToolMessages(msg core.Message) []chatMessage {

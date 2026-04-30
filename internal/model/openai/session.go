@@ -3,6 +3,7 @@ package openai
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -378,11 +379,41 @@ func buildInputContent(msg core.Message) []responsesInputContent {
 		content = append(content, responsesInputContent{Type: "input_text", Text: msg.Content})
 	}
 	for _, part := range msg.Parts {
-		if part.Type == core.MessagePartText && part.Text != "" {
+		switch {
+		case part.Type == core.MessagePartText && part.Text != "":
 			content = append(content, responsesInputContent{Type: "input_text", Text: part.Text})
+		case isImagePart(part):
+			if imageURL := imageURLFromPart(part); imageURL != "" {
+				content = append(content, responsesInputContent{
+					Type:     "input_image",
+					ImageURL: imageURL,
+					Detail:   strings.TrimSpace(part.Detail),
+				})
+			}
 		}
 	}
 	return content
+}
+
+func isImagePart(part core.MessagePart) bool {
+	if part.Type == core.MessagePartImage {
+		return true
+	}
+	return part.Type == core.MessagePartFile && strings.HasPrefix(strings.ToLower(strings.TrimSpace(part.MimeType)), "image/")
+}
+
+func imageURLFromPart(part core.MessagePart) string {
+	if url := strings.TrimSpace(part.URL); url != "" {
+		return url
+	}
+	if len(part.Data) == 0 {
+		return ""
+	}
+	mimeType := strings.TrimSpace(part.MimeType)
+	if mimeType == "" {
+		mimeType = "image/png"
+	}
+	return "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(part.Data)
 }
 
 func buildTools(tools []core.ToolSpec) []responsesTool {

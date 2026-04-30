@@ -29,6 +29,17 @@ type chatMessage struct {
 	Name       string         `json:"name,omitempty"`
 }
 
+type chatContentPart struct {
+	Type     string        `json:"type"`
+	Text     string        `json:"text,omitempty"`
+	ImageURL *chatImageURL `json:"image_url,omitempty"`
+}
+
+type chatImageURL struct {
+	URL    string `json:"url"`
+	Detail string `json:"detail,omitempty"`
+}
+
 type chatTool struct {
 	Type     string           `json:"type"`
 	Function chatToolFunction `json:"function"`

@@ -223,6 +223,81 @@ func TestSessionBuildsToolResultMessages(t *testing.T) {
 	}
 }
 
+func TestSessionBuildsImageURLContent(t *testing.T) {
+	t.Parallel()
+
+	var captured chatCompletionsRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(chatCompletionsResponse{
+			ID: "chatcmpl_image",
+			Choices: []chatCompletionChoice{
+				{
+					Index: 0,
+					Message: chatMessage{
+						Role:    string(core.MessageRoleAssistant),
+						Content: "seen",
+					},
+					FinishReason: "stop",
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	p := NewProvider(
+		WithAPIKey("sk-test"),
+		WithBaseURL(server.URL),
+		WithHTTPClient(server.Client()),
+	)
+	sess, err := p.NewSession(context.Background(), model.SessionOptions{Model: "gpt-4o-mini"})
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+
+	events, err := sess.StreamTurn(context.Background(), core.TurnInput{
+		Messages: []core.Message{
+			{
+				Role:    core.MessageRoleUser,
+				Content: "inspect this screenshot",
+				Parts: []core.MessagePart{
+					{
+						Type:     core.MessagePartImage,
+						MimeType: "image/png",
+						URL:      "https://example.com/screenshot.png",
+						Detail:   "low",
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamTurn() error = %v", err)
+	}
+	_ = collectEvents(t, events)
+
+	if len(captured.Messages) != 1 {
+		t.Fatalf("request messages = %d, want 1", len(captured.Messages))
+	}
+	parts, ok := captured.Messages[0].Content.([]any)
+	if !ok {
+		t.Fatalf("content = %#v, want []any", captured.Messages[0].Content)
+	}
+	if len(parts) != 2 {
+		t.Fatalf("content parts = %#v, want 2", parts)
+	}
+	imagePart, ok := parts[1].(map[string]any)
+	if !ok || imagePart["type"] != "image_url" {
+		t.Fatalf("image part = %#v", parts[1])
+	}
+	imageURL, ok := imagePart["image_url"].(map[string]any)
+	if !ok || imageURL["url"] != "https://example.com/screenshot.png" || imageURL["detail"] != "low" {
+		t.Fatalf("image_url = %#v", imagePart["image_url"])
+	}
+}
+
 func collectEvents(t *testing.T, ch <-chan core.TurnEvent) []core.TurnEvent {
 	t.Helper()
 

@@ -89,6 +89,75 @@ func TestSessionStreamsAssistantText(t *testing.T) {
 	}
 }
 
+func TestSessionBuildsImageInputContent(t *testing.T) {
+	t.Parallel()
+
+	var captured responsesCreateRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(responsesCreateResponse{
+			ID: "resp_image",
+			Output: []json.RawMessage{
+				mustJSON(t, responseMessageItem{
+					Type: "message",
+					Role: "assistant",
+					Content: []responseMessagePart{
+						{Type: "output_text", Text: "seen"},
+					},
+				}),
+			},
+		})
+	}))
+	defer server.Close()
+
+	p := NewProvider(
+		WithAPIKey("sk-test"),
+		WithBaseURL(server.URL),
+		WithHTTPClient(server.Client()),
+	)
+	sess, err := p.NewSession(context.Background(), modelSessionOptions())
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+
+	events, err := sess.StreamTurn(context.Background(), core.TurnInput{
+		Messages: []core.Message{
+			{
+				Role:    core.MessageRoleUser,
+				Content: "inspect this screenshot",
+				Parts: []core.MessagePart{
+					{
+						Type:     core.MessagePartImage,
+						MimeType: "image/png",
+						URL:      "https://example.com/screenshot.png",
+						Detail:   "low",
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamTurn() error = %v", err)
+	}
+	_ = collectEvents(t, events)
+
+	if len(captured.Input) != 1 {
+		t.Fatalf("input items = %d, want 1", len(captured.Input))
+	}
+	content := captured.Input[0].Content
+	if len(content) != 2 {
+		t.Fatalf("content parts = %#v, want text and image", content)
+	}
+	if content[0].Type != "input_text" || content[0].Text != "inspect this screenshot" {
+		t.Fatalf("text content = %#v", content[0])
+	}
+	if content[1].Type != "input_image" || content[1].ImageURL != "https://example.com/screenshot.png" || content[1].Detail != "low" {
+		t.Fatalf("image content = %#v", content[1])
+	}
+}
+
 func TestSessionPersistsPreviousResponseAndToolOutputs(t *testing.T) {
 	t.Parallel()
 

@@ -3,6 +3,7 @@ package anthropic
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -370,6 +371,12 @@ func buildUserMessage(msg core.Message) (messageItem, bool) {
 	for _, part := range msg.Parts {
 		if part.Type == core.MessagePartText && part.Text != "" {
 			blocks = append(blocks, contentBlock{Type: "text", Text: part.Text})
+			continue
+		}
+		if isImagePart(part) {
+			if block, ok := imageBlock(part); ok {
+				blocks = append(blocks, block)
+			}
 		}
 	}
 	if len(blocks) == 0 {
@@ -400,6 +407,40 @@ func buildAssistantMessage(msg core.Message) (messageItem, bool) {
 		return messageItem{}, false
 	}
 	return messageItem{Role: "assistant", Content: blocks}, true
+}
+
+func isImagePart(part core.MessagePart) bool {
+	if part.Type == core.MessagePartImage {
+		return true
+	}
+	return part.Type == core.MessagePartFile && strings.HasPrefix(strings.ToLower(strings.TrimSpace(part.MimeType)), "image/")
+}
+
+func imageBlock(part core.MessagePart) (contentBlock, bool) {
+	mimeType := strings.TrimSpace(part.MimeType)
+	if mimeType == "" {
+		mimeType = "image/png"
+	}
+	if url := strings.TrimSpace(part.URL); url != "" {
+		return contentBlock{
+			Type: "image",
+			Source: &imageSource{
+				Type: "url",
+				URL:  url,
+			},
+		}, true
+	}
+	if len(part.Data) == 0 {
+		return contentBlock{}, false
+	}
+	return contentBlock{
+		Type: "image",
+		Source: &imageSource{
+			Type:      "base64",
+			MediaType: mimeType,
+			Data:      base64.StdEncoding.EncodeToString(part.Data),
+		},
+	}, true
 }
 
 func buildToolResultMessage(msg core.Message) (messageItem, bool) {

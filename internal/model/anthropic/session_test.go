@@ -96,6 +96,67 @@ func TestSessionStreamsTextAndToolCall(t *testing.T) {
 	}
 }
 
+func TestSessionBuildsImageBlock(t *testing.T) {
+	var gotRequest messagesCreateRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotRequest); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(messagesCreateResponse{
+			ID:    "msg_image",
+			Type:  "message",
+			Role:  "assistant",
+			Model: defaultModelName,
+			Content: []contentBlock{
+				{Type: "text", Text: "seen"},
+			},
+			StopReason: "end_turn",
+		})
+	}))
+	defer server.Close()
+
+	sess := newSession(sessionConfig{
+		id:        "anthropic-test",
+		provider:  "anthropic",
+		model:     defaultModelName,
+		apiKey:    "test-key",
+		baseURL:   server.URL,
+		client:    server.Client(),
+		maxTokens: 128,
+	})
+
+	events, err := sess.StreamTurn(context.Background(), core.TurnInput{
+		Messages: []core.Message{
+			{
+				Role:    core.MessageRoleUser,
+				Content: "inspect this screenshot",
+				Parts: []core.MessagePart{
+					{
+						Type:     core.MessagePartImage,
+						MimeType: "image/png",
+						Data:     []byte("png-bytes"),
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamTurn: %v", err)
+	}
+	_ = drainEvents(events)
+
+	if len(gotRequest.Messages) != 1 || len(gotRequest.Messages[0].Content) != 2 {
+		t.Fatalf("unexpected request messages: %#v", gotRequest.Messages)
+	}
+	image := gotRequest.Messages[0].Content[1]
+	if image.Type != "image" || image.Source == nil {
+		t.Fatalf("image block = %#v", image)
+	}
+	if image.Source.Type != "base64" || image.Source.MediaType != "image/png" || image.Source.Data == "" {
+		t.Fatalf("image source = %#v", image.Source)
+	}
+}
+
 func TestSessionContinuesAfterToolResult(t *testing.T) {
 	var requestCount atomic.Int32
 	var secondRequest messagesCreateRequest

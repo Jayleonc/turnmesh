@@ -110,6 +110,153 @@ func TestRunOneShotReturnsAssistantText(t *testing.T) {
 	}
 }
 
+func TestRunOneShotSendsMultimodalParts(t *testing.T) {
+	t.Parallel()
+
+	var captured struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{
+					"message": map[string]any{
+						"role":    "assistant",
+						"content": "seen",
+					},
+					"finish_reason": "stop",
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	pngHeader := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+	result, err := RunOneShot(context.Background(), Config{
+		Provider:   "openai-chatcompat",
+		Model:      "gpt-4o-mini",
+		BaseURL:    server.URL,
+		APIKey:     "sk-test",
+		HTTPClient: server.Client(),
+	}, OneShotRequest{
+		Messages: []Message{
+			UserParts(
+				TextPart("inspect this screenshot"),
+				ImageBytesPart("", pngHeader, WithPartDetail("low"), WithPartSourcePath("/tmp/screenshot.png")),
+			),
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunOneShot() error = %v", err)
+	}
+	if result.Text != "seen" {
+		t.Fatalf("text = %q, want seen", result.Text)
+	}
+	if len(captured.Messages) != 1 {
+		t.Fatalf("messages = %d, want 1", len(captured.Messages))
+	}
+
+	var content []struct {
+		Type     string `json:"type"`
+		Text     string `json:"text,omitempty"`
+		ImageURL *struct {
+			URL    string `json:"url"`
+			Detail string `json:"detail,omitempty"`
+		} `json:"image_url,omitempty"`
+	}
+	if err := json.Unmarshal(captured.Messages[0].Content, &content); err != nil {
+		t.Fatalf("decode content parts: %v; raw=%s", err, string(captured.Messages[0].Content))
+	}
+	if len(content) != 2 {
+		t.Fatalf("content parts = %#v, want text + image", content)
+	}
+	if content[0].Type != "text" || content[0].Text != "inspect this screenshot" {
+		t.Fatalf("text part = %#v", content[0])
+	}
+	if content[1].Type != "image_url" || content[1].ImageURL == nil {
+		t.Fatalf("image part = %#v", content[1])
+	}
+	if !strings.HasPrefix(content[1].ImageURL.URL, "data:image/png;base64,") {
+		t.Fatalf("image url = %q, want data:image/png", content[1].ImageURL.URL)
+	}
+	if content[1].ImageURL.Detail != "low" {
+		t.Fatalf("detail = %q, want low", content[1].ImageURL.Detail)
+	}
+}
+
+func TestMessagePartConstructorsCloneAndNormalize(t *testing.T) {
+	t.Parallel()
+
+	data := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+	part := ImageBytesPart("", data, WithPartName("shot"), WithPartMetadata(map[string]string{"k": "v"}))
+	data[0] = 0
+
+	if part.Type != MessagePartImage {
+		t.Fatalf("type = %q, want image", part.Type)
+	}
+	if part.MIMEType != "image/png" {
+		t.Fatalf("mime = %q, want image/png", part.MIMEType)
+	}
+	if part.Data[0] != 0x89 {
+		t.Fatalf("part data was not cloned")
+	}
+	if !part.IsImage() || !part.HasInlineData() || !part.HasMedia() {
+		t.Fatalf("image helpers returned false for %#v", part)
+	}
+	part.Metadata["k"] = "changed"
+
+	message := UserParts(part)
+	part.Data[1] = 0
+	part.Metadata["k"] = "changed-again"
+	if message.Parts[0].Data[1] != 0x50 {
+		t.Fatalf("message part data was not cloned")
+	}
+	if message.Parts[0].Metadata["k"] != "changed" {
+		t.Fatalf("message metadata = %q, want changed", message.Parts[0].Metadata["k"])
+	}
+}
+
+func TestRunOneShotRejectsInvalidMediaParts(t *testing.T) {
+	t.Parallel()
+
+	_, err := RunOneShot(context.Background(), Config{
+		Provider:      "openai-chatcompat",
+		Model:         "gpt-4o-mini",
+		MaxMediaBytes: 3,
+	}, OneShotRequest{
+		Messages: []Message{
+			UserParts(ImageBytesPart("image/png", []byte("1234"))),
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "max_media_bytes") {
+		t.Fatalf("err = %v, want max_media_bytes error", err)
+	}
+
+	_, err = RunOneShot(context.Background(), Config{
+		Provider: "openai-chatcompat",
+		Model:    "gpt-4o-mini",
+	}, OneShotRequest{
+		Messages: []Message{
+			UserParts(MessagePart{
+				Type:     MessagePartImage,
+				MIMEType: "image/png",
+				Data:     []byte("x"),
+				URL:      "https://example.com/image.png",
+			}),
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "either url or data") {
+		t.Fatalf("err = %v, want ambiguous source error", err)
+	}
+}
+
 func TestRunOneShotRejectsToolCalls(t *testing.T) {
 	t.Parallel()
 
